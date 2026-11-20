@@ -93,6 +93,7 @@
     .msg.notice { background: var(--accent-soft); color: var(--accent); border: 1px solid #bfdccc; }
     .msg.conflict { background: var(--warn-soft); color: var(--warn); border: 1px solid #eccfae; }
     .msg ul { margin: 8px 0 0; padding-left: 22px; }
+    .lock-conflict-table { margin-top: 10px; background: #fff; }
     .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
     @media (max-width: 900px) { .cols { grid-template-columns: 1fr; } }
     .lock-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
@@ -127,6 +128,29 @@
   {% if errors %}
   <div class="msg error" id="errors">
     {% for item in errors %}<div>{{ item }}</div>{% endfor %}
+  </div>
+  {% endif %}
+
+  {% if lock_conflicts %}
+  <div class="msg error" id="lock-conflict">
+    <b>发布被拒绝：</b>以下街道在您填写目标之后、本次发布生效之前已被锁定，锁定合计与原填目标户数不一致。
+    本次发布未写入任何权重，现行权重与发布记录保持不变。
+    <table class="lock-conflict-table">
+      <thead>
+        <tr><th>街道</th><th class="num">原填目标户数</th><th class="num">锁定合计</th><th class="num">锁定样本户数</th></tr>
+      </thead>
+      <tbody>
+        {% for item in lock_conflicts %}
+        <tr>
+          <td>{{ item.street }}</td>
+          <td class="num">{{ "{:,}".format(item.target) }}</td>
+          <td class="num">{{ "{:,}".format(item.locked_total) }}</td>
+          <td class="num">{{ item.household_count }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div style="margin-top:8px;font-size:13px;">这些街道的目标已按锁定合计固定（只读）；其余仍可编辑的目标已保留在表单中，请修订后重新提交。</div>
   </div>
   {% endif %}
 
@@ -205,6 +229,9 @@
   </section>
 
   <form method="post" action="/publish" id="publish">
+    {% for street in data.streets if not street.locked %}
+    <input type="hidden" name="editable__{{ street.name }}" value="1">
+    {% endfor %}
     <section class="card">
       <div class="subhead">
         <h2>设定目标户数</h2>
@@ -228,7 +255,7 @@
                            id="street-{{ loop.index }}"
                            {% if street.locked %}readonly{% endif %}
                            data-default="{{ street.target_value }}"
-                           value="{{ form.get('target__' ~ street.name, street.target_value) }}"
+                           value="{{ street.target_value if street.locked else form.get('target__' ~ street.name, street.target_value) }}"
                            aria-label="{{ street.name }} 目标户数">
                   </td>
                 </tr>

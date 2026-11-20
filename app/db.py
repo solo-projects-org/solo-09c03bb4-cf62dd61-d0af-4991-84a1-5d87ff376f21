@@ -81,6 +81,9 @@ class PublishOutcome:
     total: int = 0
     publication_id: Optional[int] = None
     conflict: Optional[List[dict]] = None
+    # Set when a street that was editable in the submitted form has been
+    # locked since with a different total; the publish is then rejected.
+    lock_conflicts: Optional[List[dict]] = None
 
 
 @dataclass
@@ -458,8 +461,17 @@ def publish(
     db_path: Path,
     street_targets: Mapping[str, int],
     type_targets: Mapping[str, int],
+    editable_streets: Optional[Iterable[str]] = None,
 ) -> PublishOutcome:
-    """Atomically calibrate and publish; never partially writes weights."""
+    """Atomically calibrate and publish; never partially writes weights.
+
+    ``editable_streets`` lists the streets whose target boxes were editable
+    when the submitted form was rendered.  If such a street has been locked
+    since, its locked total must equal the originally filled target;
+    otherwise the publish is rejected and every mismatching street is
+    reported in ``lock_conflicts``.  Targets of streets that were already
+    read-only in the form keep being ignored in favour of the locked value.
+    """
     conn = _connect(db_path)
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -471,6 +483,38 @@ def publish(
             unknown = set(street_targets) - {row["street"] for row in rows}
             if unknown:
                 raise ValidationError("目标中出现样本里不存在的街道：" + "、".join(sorted(unknown)))
+            for name, value in street_targets.items():
+                if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                    raise ValidationError(f"街道「{name}」的目标户数必须是非负整数")
+                if value > MAX_TARGET:
+                    raise ValidationError(f"街道「{name}」的目标户数过大")
+            for name, value in type_targets.items():
+                if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                    raise ValidationError(f"住房类型「{name}」的目标户数必须是非负整数")
+                if value > MAX_TARGET:
+                    raise ValidationError(f"住房类型「{name}」的目标户数过大")
+
+            # Locks committed before this transaction are the ones the new
+            # weights must respect.  A street that was still editable when
+            # the form was rendered carries a target the user actually filled
+            # in; a lock created since must not silently override it.
+            editable = set(editable_streets or ())
+            lock_conflicts = [
+                {
+                    "street": name,
+                    "target": street_targets[name],
+                    "locked_total": locks[name]["total_weight"],
+                    "household_count": locks[name]["household_count"],
+                }
+                for name in sorted(locks)
+                if name in editable
+                and name in street_targets
+                and street_targets[name] != locks[name]["total_weight"]
+            ]
+            if lock_conflicts:
+                conn.execute("ROLLBACK")
+                return PublishOutcome(ok=False, lock_conflicts=lock_conflicts)
+
             # A locked street's weights are frozen, so its total is already
             # implied by the lock; its submitted value is ignored and only the
             # remaining streets are target conditions the statistician adjusts.
@@ -483,16 +527,6 @@ def publish(
                 raise ValidationError("街道目标与样本中的街道不一致")
             if set(type_targets) != types:
                 raise ValidationError("住房类型目标与样本中的类型不一致")
-            for name, value in street_targets.items():
-                if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-                    raise ValidationError(f"街道「{name}」的目标户数必须是非负整数")
-                if value > MAX_TARGET:
-                    raise ValidationError(f"街道「{name}」的目标户数过大")
-            for name, value in type_targets.items():
-                if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-                    raise ValidationError(f"住房类型「{name}」的目标户数必须是非负整数")
-                if value > MAX_TARGET:
-                    raise ValidationError(f"住房类型「{name}」的目标户数过大")
 
             # Only the unlocked streets contribute target constraints; the
             # locked ones contribute their frozen per-household weights.

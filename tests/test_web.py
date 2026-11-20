@@ -42,6 +42,20 @@ def targets_from(html: str) -> dict:
     }
 
 
+def editable_from(html: str) -> list:
+    import re
+
+    return re.findall(r'name="editable__([^"]+)"', html)
+
+
+def publish_form(values: dict, editable: list) -> dict:
+    """Build a submission the way a browser would: targets plus the hidden
+    markers recording which streets were editable when the form rendered."""
+    data = {f"target__{name}": value for name, value in values.items()}
+    data.update({f"editable__{name}": "1" for name in editable})
+    return data
+
+
 def test_index_shows_initial_state(client: TestClient):
     response = client.get("/")
     assert response.status_code == 200
@@ -125,6 +139,87 @@ def test_lock_then_publish_keeps_locked_weights(client: TestClient):
         for h in after.households
         if h["street"] == "A"
     } == {h["sample_id"]: h["current_weight"] for h in locked}
+
+
+def test_interleaved_lock_rejects_stale_target(client: TestClient):
+    """Tab A fills targets; tab B locks a street; tab A submits the stale form."""
+    # Tab A: render the form and fill in targets (all streets editable).
+    page = client.get("/").text
+    editable = editable_from(page)
+    assert set(editable) == {"A", "B"}
+    values = targets_from(page)
+    values.update({"A": "8", "B": "4", "T1": "7", "T2": "5"})  # feasible together
+
+    # Tab B: lock street A (still at initial weights, locked total 5).
+    assert client.post("/lock", data={"street": "A"}).status_code == 200
+
+    # Tab A: submit the originally filled form.
+    response = client.post("/publish", data=publish_form(values, editable))
+    assert response.status_code == 409
+    assert "发布被拒绝" in response.text
+    assert "原填目标户数" in response.text
+    assert "锁定合计" in response.text
+    assert "A" in response.text
+    # The page lists the originally filled target and the locked total.
+    assert ">8</td>" in response.text
+    assert ">5</td>" in response.text
+
+    # Current weights and publication records are unchanged.
+    data = db.get_dashboard(main._db_path())
+    assert all(
+        h["current_weight"] == h["initial_weight"] for h in data.households
+    )
+    assert data.summary["publication_count"] == 0
+
+    # Still-editable targets are kept for revision; the newly locked street
+    # shows its locked total instead of the stale filled value.
+    shown = targets_from(response.text)
+    assert shown["B"] == "4"
+    assert shown["T1"] == "7"
+    assert shown["T2"] == "5"
+    assert shown["A"] == "5"
+
+    # Revise the remaining editable targets against the lock and republish.
+    page = client.get("/").text
+    editable = editable_from(page)
+    assert editable == ["B"]
+    values = targets_from(page)
+    values.update({"B": "8", "T1": "8", "T2": "5"})
+    response = client.post("/publish", data=publish_form(values, editable))
+    assert response.status_code == 200
+    assert "发布成功" in response.text
+    data = db.get_dashboard(main._db_path())
+    assert {
+        h["sample_id"]: h["current_weight"]
+        for h in data.households
+        if h["street"] == "A"
+    } == {"H01": 2, "H02": 3}
+    assert sum(
+        h["current_weight"] for h in data.households if h["street"] == "B"
+    ) == 8
+    assert data.summary["publication_count"] == 1
+
+
+def test_interleaved_lock_matching_target_publishes(client: TestClient):
+    """A new lock consistent with the filled target publishes as usual."""
+    page = client.get("/").text
+    editable = editable_from(page)
+    values = targets_from(page)  # defaults: A=5, B=5, T1=6, T2=4
+
+    # Tab B locks A at its current (initial) weights: locked total 5, which
+    # matches the target filled in tab A.
+    assert client.post("/lock", data={"street": "A"}).status_code == 200
+
+    response = client.post("/publish", data=publish_form(values, editable))
+    assert response.status_code == 200
+    assert "发布成功" in response.text
+    data = db.get_dashboard(main._db_path())
+    assert {
+        h["sample_id"]: h["current_weight"]
+        for h in data.households
+        if h["street"] == "A"
+    } == {"H01": 2, "H02": 3}
+    assert data.summary["publication_count"] == 1
 
 
 def test_lock_unknown_street_shows_error(client: TestClient):

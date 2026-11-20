@@ -233,6 +233,63 @@ def test_conflict_references_lock_and_targets(database: Path):
     assert set(after.locks) == {"A"}
 
 
+def test_publish_rejects_lock_diverging_from_editable_target(database: Path):
+    """A lock created after the form was rendered must not silently win."""
+    db.lock_street(database, "A")  # locks initial weights, total 5
+    before = {
+        h["sample_id"]: h["current_weight"] for h in db.get_dashboard(database).households
+    }
+    outcome = db.publish(
+        database,
+        {"A": 8, "B": 4},
+        {"T1": 7, "T2": 5},
+        editable_streets={"A", "B"},
+    )
+    assert not outcome.ok
+    assert outcome.conflict is None
+    assert outcome.lock_conflicts == [
+        {"street": "A", "target": 8, "locked_total": 5, "household_count": 2}
+    ]
+    # Nothing was written: current weights and publication history are kept.
+    data = db.get_dashboard(database)
+    assert {h["sample_id"]: h["current_weight"] for h in data.households} == before
+    assert data.summary["publication_count"] == 0
+
+
+def test_publish_allows_lock_matching_editable_target(database: Path):
+    """A new lock consistent with the filled target calibrates as usual."""
+    db.lock_street(database, "A")  # locked total 5 equals the filled target
+    outcome = db.publish(
+        database,
+        {"A": 5, "B": 5},
+        {"T1": 6, "T2": 4},
+        editable_streets={"A", "B"},
+    )
+    assert outcome.ok, outcome.lock_conflicts
+    data = db.get_dashboard(database)
+    assert {
+        h["sample_id"]: h["current_weight"]
+        for h in data.households
+        if h["street"] == "A"
+    } == {"H01": 2, "H02": 3}
+    assert data.summary["publication_count"] == 1
+
+
+def test_readonly_locked_street_target_still_ignored(database: Path):
+    """Streets already read-only in the form keep using the locked value."""
+    db.lock_street(database, "A")
+    outcome = db.publish(
+        database,
+        {"A": 999, "B": 7},
+        {"T1": 7, "T2": 5},
+        editable_streets={"B"},  # only B was editable when the form rendered
+    )
+    assert outcome.ok, outcome.lock_conflicts
+    data = db.get_dashboard(database)
+    assert sum(h["current_weight"] for h in data.households if h["street"] == "A") == 5
+    assert sum(h["current_weight"] for h in data.households if h["street"] == "B") == 7
+
+
 def test_lock_before_first_publish_uses_initial_weights(database: Path):
     initial = {
         h["sample_id"]: h["initial_weight"]

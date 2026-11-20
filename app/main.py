@@ -44,6 +44,7 @@ def _render(
     form: Mapping[str, str] | None = None,
     conflict: List[dict] | None = None,
     conflict_message: str | None = None,
+    lock_conflicts: List[dict] | None = None,
     scroll_to: str | None = None,
 ) -> HTMLResponse:
     data = db.get_dashboard(_db_path())
@@ -59,6 +60,7 @@ def _render(
         "form": dict(form or {}),
         "conflict": conflict or [],
         "conflict_message": conflict_message,
+        "lock_conflicts": lock_conflicts or [],
         "scroll_to": scroll_to,
     }
     return templates.TemplateResponse(request, "index.html", context, status_code=status_code)
@@ -99,14 +101,15 @@ def _quote(text: str) -> str:
 
 
 def _parse_targets(
-    form: Mapping[str, str], names: List[str], label: str
+    form: Mapping[str, str], names: List[str], label: str, required: bool = True
 ) -> Dict[str, int]:
     targets: Dict[str, int] = {}
     problems: List[str] = []
     for name in names:
         raw = (form.get(f"target__{name}") or "").strip()
         if not raw:
-            problems.append(f"{label}「{name}」的目标户数未填写")
+            if required:
+                problems.append(f"{label}「{name}」的目标户数未填写")
             continue
         if not raw.isdigit():
             problems.append(f"{label}「{name}」的目标户数必须是非负整数：{raw!r}")
@@ -130,12 +133,17 @@ async def publish(request: Request):
     form = await request.form()
     form_dict = _form_snapshot(form)
     data = db.get_dashboard(_db_path())
-    # Locked streets have frozen weights and an implied total, so their form
-    # value is not a user-editable condition and need not be validated.
-    street_names = [street["name"] for street in data.streets if not street["locked"]]
+    unlocked_names = [street["name"] for street in data.streets if not street["locked"]]
+    locked_names = [street["name"] for street in data.streets if street["locked"]]
     type_names = [group["name"] for group in data.types]
     try:
-        street_targets = _parse_targets(form, street_names, "街道")
+        street_targets = _parse_targets(form, unlocked_names, "街道")
+        # Locked streets render read-only, but their submitted value is still
+        # parsed so the service can compare the originally filled target
+        # against a lock created after the form was rendered.
+        street_targets.update(
+            _parse_targets(form, locked_names, "街道", required=False)
+        )
         type_targets = _parse_targets(form, type_names, "住房类型")
     except db.ValidationError as exc:
         return _render(
@@ -146,8 +154,17 @@ async def publish(request: Request):
             scroll_to="publish",
         )
 
+    # Hidden markers record which streets were editable when the form was
+    # rendered; a lock created since must not silently override those targets.
+    editable_streets = {
+        key[len("editable__"):]
+        for key in form.keys()
+        if key.startswith("editable__")
+    }
     try:
-        outcome = db.publish(_db_path(), street_targets, type_targets)
+        outcome = db.publish(
+            _db_path(), street_targets, type_targets, editable_streets=editable_streets
+        )
     except db.ValidationError as exc:
         return _render(
             request,
@@ -158,6 +175,14 @@ async def publish(request: Request):
         )
 
     if not outcome.ok:
+        if outcome.lock_conflicts is not None:
+            return _render(
+                request,
+                status_code=409,
+                lock_conflicts=outcome.lock_conflicts,
+                form=form_dict,
+                scroll_to="publish",
+            )
         return _render(
             request,
             status_code=409,
