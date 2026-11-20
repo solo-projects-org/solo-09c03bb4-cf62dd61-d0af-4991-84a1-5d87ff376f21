@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>住户能源调查 · 权重校准</title>
+  <style>
+    :root {
+      --ink: #1f2933;
+      --muted: #5b6770;
+      --line: #d8dee3;
+      --bg: #f5f7f8;
+      --card: #ffffff;
+      --accent: #1f6f5c;
+      --accent-soft: #e4f1ec;
+      --warn: #8a4b0f;
+      --warn-soft: #fbeee0;
+      --bad: #8b1e1e;
+      --bad-soft: #fbe9e9;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+      color: var(--ink);
+      background: var(--bg);
+      line-height: 1.6;
+    }
+    header {
+      background: linear-gradient(135deg, #143d33, #1f6f5c);
+      color: #fff;
+      padding: 28px 32px 24px;
+    }
+    header h1 { margin: 0 0 6px; font-size: 24px; letter-spacing: .5px; }
+    header p { margin: 0; color: #cfe6de; font-size: 14px; }
+    main { max-width: 1180px; margin: 0 auto; padding: 24px 20px 64px; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 20px 22px;
+      margin-bottom: 20px;
+      box-shadow: 0 1px 2px rgba(16, 24, 32, .04);
+    }
+    .card h2 { font-size: 18px; margin: 0 0 4px; }
+    .card .hint { color: var(--muted); font-size: 13px; margin: 0 0 16px; }
+    .stats { display: flex; flex-wrap: wrap; gap: 12px; }
+    .stat {
+      flex: 1 1 150px;
+      background: var(--accent-soft);
+      border-radius: 8px;
+      padding: 10px 14px;
+    }
+    .stat b { display: block; font-size: 20px; color: var(--accent); }
+    .stat span { font-size: 12px; color: var(--muted); }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { padding: 7px 10px; border-bottom: 1px solid var(--line); text-align: left; }
+    th { background: #f0f3f4; font-weight: 600; font-size: 13px; color: var(--muted); }
+    td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+    input[type=number] {
+      width: 120px;
+      padding: 5px 8px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      font: inherit;
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+    }
+    input[type=number]:focus { outline: 2px solid var(--accent); border-color: var(--accent); }
+    button {
+      font: inherit;
+      border: 0;
+      border-radius: 7px;
+      padding: 7px 16px;
+      cursor: pointer;
+      background: var(--accent);
+      color: #fff;
+    }
+    button.secondary { background: #fff; color: var(--accent); border: 1px solid var(--accent); }
+    button:disabled { background: #9aa7ae; cursor: not-allowed; }
+    .pill {
+      display: inline-block;
+      font-size: 12px;
+      padding: 1px 9px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      white-space: nowrap;
+    }
+    .pill.locked { background: var(--warn-soft); color: var(--warn); }
+    .msg { border-radius: 8px; padding: 11px 14px; margin: 0 0 12px; font-size: 14px; }
+    .msg.error { background: var(--bad-soft); color: var(--bad); border: 1px solid #e7bcbc; }
+    .msg.notice { background: var(--accent-soft); color: var(--accent); border: 1px solid #bfdccc; }
+    .msg.conflict { background: var(--warn-soft); color: var(--warn); border: 1px solid #eccfae; }
+    .msg ul { margin: 8px 0 0; padding-left: 22px; }
+    .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    @media (max-width: 900px) { .cols { grid-template-columns: 1fr; } }
+    .lock-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    select {
+      padding: 7px 10px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      font: inherit;
+      background: #fff;
+      min-width: 180px;
+    }
+    .mono { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; font-size: 12px; }
+    details summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+    details table { margin-top: 10px; }
+    .scroll { max-height: 320px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
+    .scroll table { margin: 0; }
+    .scroll thead th { position: sticky; top: 0; z-index: 1; }
+    footer { color: var(--muted); font-size: 12px; text-align: center; padding-top: 12px; }
+    .toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 14px; }
+    .subhead { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+    .subhead .hint { margin: 0; }
+    .lock-tag { color: var(--warn); font-size: 12px; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>住户能源调查 · 权重校准台账</h1>
+  <p>固定样本 {{ data.summary.household_count }} 户 · 街道 {{ data.summary.street_count }} 个 · 住房类型 {{ data.summary.type_count }} 类 · 现行合计 {{ "{:,}".format(data.summary.total_current) }}</p>
+</header>
+<main>
+
+  {% if errors %}
+  <div class="msg error" id="errors">
+    {% for item in errors %}<div>{{ item }}</div>{% endfor %}
+  </div>
+  {% endif %}
+
+  {% if conflict_message %}
+  <div class="msg conflict" id="conflict">
+    <b>无解：</b>{{ conflict_message }}
+    <ul>
+      {% for item in conflict %}<li>{{ item.label }}</li>{% endfor %}
+    </ul>
+    <div style="margin-top:8px;font-size:13px;">现行权重未发生变化，可调整目标户数后重新提交，或按上述提示放开其中一项。</div>
+  </div>
+  {% endif %}
+
+  {% if notices %}
+    {% for item in notices %}<div class="msg notice">{{ item }}</div>{% endfor %}
+  {% endif %}
+
+  <section class="card" id="summary">
+    <h2>台账概览</h2>
+    <p class="hint">现行权重为最近一次成功发布的结果；从未发布时等于初始权重。</p>
+    <div class="stats">
+      <div class="stat"><b>{{ data.summary.household_count }}</b><span>样本户数</span></div>
+      <div class="stat"><b>{{ "{:,}".format(data.summary.total_initial) }}</b><span>初始权重合计</span></div>
+      <div class="stat"><b>{{ "{:,}".format(data.summary.total_current) }}</b><span>现行权重合计</span></div>
+      <div class="stat"><b>{{ data.summary.locked_streets }}</b><span>已锁定街道</span></div>
+      <div class="stat"><b>{{ data.summary.publication_count }}</b><span>成功发布次数</span></div>
+    </div>
+  </section>
+
+  <section class="card" id="locks">
+    <div class="subhead">
+      <h2>锁定街道</h2>
+      <p class="hint">锁定后，该街道逐户权重在后续发布中保持不变。</p>
+    </div>
+    {% set unlocked = data.streets | rejectattr('locked') | list %}
+    <form method="post" action="/lock" class="lock-row">
+      <select name="street" aria-label="选择要锁定的街道" {% if not unlocked %}disabled{% endif %}>
+        {% for street in data.streets %}
+          <option value="{{ street.name }}" {% if street.locked %}disabled{% endif %}>
+            {{ street.name }}（{{ street.count }} 户，现行合计 {{ "{:,}".format(street.current_sum) }}）{% if street.locked %} · 已锁定{% endif %}
+          </option>
+        {% endfor %}
+      </select>
+      <button type="submit" {% if not unlocked %}disabled{% endif %}>锁定该街道现行权重</button>
+      {% if not unlocked %}<span class="hint">所有街道均已锁定。</span>{% endif %}
+    </form>
+
+    <div class="scroll" style="margin-top:16px;">
+      <table>
+        <thead>
+          <tr>
+            <th>街道</th><th class="num">户数</th><th class="num">初始合计</th>
+            <th class="num">现行合计</th><th>状态</th><th>锁定时间</th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for street in data.streets %}
+          <tr>
+            <td>{{ street.name }}</td>
+            <td class="num">{{ street.count }}</td>
+            <td class="num">{{ "{:,}".format(street.initial_sum) }}</td>
+            <td class="num">{{ "{:,}".format(street.current_sum) }}</td>
+            <td>
+              {% if street.locked %}
+                <span class="pill locked">已锁定</span>
+              {% else %}
+                <span class="pill">可校准</span>
+              {% endif %}
+            </td>
+            <td class="mono">{{ street.lock.locked_at if street.lock else "—" }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <form method="post" action="/publish" id="publish">
+    <section class="card">
+      <div class="subhead">
+        <h2>设定目标户数</h2>
+        <p class="hint">两套目标须分别精确达标；新权重为正整数且不超过各自初始权重的 2 倍。</p>
+      </div>
+      <div class="cols">
+        <div>
+          <h3 style="font-size:15px;margin:0 0 8px;">按街道</h3>
+          <div class="scroll">
+            <table>
+              <thead><tr><th>街道</th><th class="num">户数</th><th class="num">范围</th><th class="num">目标户数</th></tr></thead>
+              <tbody>
+              {% for street in data.streets %}
+                <tr>
+                  <td>{{ street.name }}{% if street.locked %} <span class="lock-tag">锁定</span>{% endif %}</td>
+                  <td class="num">{{ street.count }}</td>
+                  <td class="num mono">{{ street.min_target }}–{{ street.max_target }}</td>
+                  <td class="num">
+                    <input type="number" min="0" step="1" required
+                           name="target__{{ street.name }}"
+                           id="street-{{ loop.index }}"
+                           {% if street.locked %}readonly{% endif %}
+                           data-default="{{ street.target_value }}"
+                           value="{{ form.get('target__' ~ street.name, street.target_value) }}"
+                           aria-label="{{ street.name }} 目标户数">
+                  </td>
+                </tr>
+              {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div>
+          <h3 style="font-size:15px;margin:0 0 8px;">按住房类型</h3>
+          <div class="scroll">
+            <table>
+              <thead><tr><th>住房类型</th><th class="num">户数</th><th class="num">范围</th><th class="num">目标户数</th></tr></thead>
+              <tbody>
+              {% for group in data.types %}
+                <tr>
+                  <td>{{ group.name }}</td>
+                  <td class="num">{{ group.count }}</td>
+                  <td class="num mono">{{ group.min_target }}–{{ group.max_target }}</td>
+                  <td class="num">
+                    <input type="number" min="0" step="1" required
+                           name="target__{{ group.name }}"
+                           id="type-{{ loop.index }}"
+                           data-default="{{ group.current_sum }}"
+                           value="{{ form.get('target__' ~ group.name, group.current_sum) }}"
+                           aria-label="{{ group.name }} 目标户数">
+                  </td>
+                </tr>
+              {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div class="toolbar">
+        <button type="submit">校准并发布</button>
+        <button type="button" class="secondary" id="reset-form">恢复为当前合计</button>
+        <span class="hint">范围为该组权重取 1 倍～2 倍初始值时可达的合计区间；实际能否同时达标由服务端求解判定。</span>
+      </div>
+    </section>
+  </form>
+
+  <section class="card">
+    <details>
+      <summary>查看逐户现行权重（{{ data.households|length }} 户）</summary>
+      <div class="scroll" style="max-height:420px;margin-top:12px;">
+        <table>
+          <thead>
+            <tr><th>样本号</th><th>街道</th><th>住房类型</th>
+              <th class="num">初始权重</th><th class="num">现行权重</th><th>状态</th></tr>
+          </thead>
+          <tbody>
+          {% for household in data.households %}
+            <tr>
+              <td class="mono">{{ household.sample_id }}</td>
+              <td>{{ household.street }}</td>
+              <td>{{ household.housing_type }}</td>
+              <td class="num">{{ household.initial_weight }}</td>
+              <td class="num">{{ household.current_weight }}</td>
+              <td>{% if household.locked %}<span class="pill locked">锁定</span>{% endif %}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  </section>
+
+  <section class="card">
+    <h2>最近发布记录</h2>
+    <p class="hint">每次成功发布都会留下一条记录；发布失败不会写入任何权重。</p>
+    {% if data.publications %}
+    <table>
+      <thead><tr><th>#</th><th>发布时间</th><th class="num">户数</th><th class="num">权重合计</th></tr></thead>
+      <tbody>
+      {% for item in data.publications %}
+        <tr><td>{{ item.id }}</td><td class="mono">{{ item.published_at }}</td>
+          <td class="num">{{ item.household_count }}</td><td class="num">{{ "{:,}".format(item.total_weight) }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+      <p class="hint">尚未发布过，现行权重全部等于初始权重。</p>
+    {% endif %}
+  </section>
+
+  <footer>重启服务后，现行权重与锁定状态仍从同一 SQLite 数据库读取。</footer>
+</main>
+<script>
+  document.getElementById('reset-form').addEventListener('click', function () {
+    document.querySelectorAll('#publish input[type=number]').forEach(function (input) {
+      if (!input.readOnly) input.value = input.dataset.default;
+    });
+  });
+  {% if scroll_to %}
+  (function () {
+    var target = document.getElementById({{ scroll_to|tojson }});
+    if (target) target.scrollIntoView({behavior: 'smooth', block: 'start'});
+  })();
+  {% endif %}
+</script>
+</body>
+</html>

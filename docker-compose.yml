@@ -1,0 +1,16 @@
+services:
+  calibration:
+    build: .
+    image: energy-survey-calibration:latest
+    container_name: energy-survey-calibration
+    ports:
+      - "${CALIBRATION_PORT:-8000}:8000"
+    volumes:
+      - calibration-data:/data
+    environment:
+      CALIBRATION_DB: /data/calibration.sqlite3
+      CALIBRATION_SAMPLE: /app/data/sample.csv
+    restart: unless-stopped
+
+volumes:
+  calibration-data:
